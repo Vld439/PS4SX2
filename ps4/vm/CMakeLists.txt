@@ -64,7 +64,8 @@ set(gs_sources
   common/Console.cpp common/Timer.cpp common/Error.cpp common/WindowInfo.cpp
   common/FileSystem.cpp common/MD5Digest.cpp common/ReadbackSpinManager.cpp
   common/Image.cpp common/FastJmp.cpp common/TextureDecompress.cpp
-  ps4/core/VulkanVideoOut.cpp ps4/core/HostSysPS4.cpp ps4/core/OrbisCompatPS4.cpp ps4/core/ThreadingPS4.cpp common/HostSys.cpp
+  ps4/core/VulkanVideoOut.cpp ps4/core/HostSysPS4.cpp ps4/core/OrbisCompatPS4.cpp ps4/core/ThreadingPS4.cpp
+  ps4/core/PythonRunnerPS4.cpp common/HostSys.cpp
   ps4/compat/ShaderCompiler.cpp
   3rdparty/fmt/src/format.cc
   3rdparty/imgui/src/imgui.cpp 3rdparty/imgui/src/imgui_draw.cpp

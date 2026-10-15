@@ -1,18 +1,6 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-#if defined(PCSX2_PS4)
-#include "PINE.h"
-namespace PINEServer
-{
-	bool s_initialized = false;
-	int s_slot = PINE_DEFAULT_SLOT;
-	bool IsInitialized() { return s_initialized; }
-	int GetSlot() { return s_slot; }
-	bool Initialize(int slot) { s_slot = slot; s_initialized = true; return true; }
-	void Deinitialize() { s_initialized = false; }
-}
-#else
 
 #include "BuildVersion.h"
 #include "Common.h"
@@ -48,6 +36,27 @@ namespace PINEServer
 	} while (0)
 #include "common/RedtapeWindows.h"
 #include <WinSock2.h>
+#elif defined(PCSX2_PS4)
+#include <orbis/Net.h>
+#include <orbis/NetCtl.h>
+#include <orbis/Sysmodule.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#define read_portable(a, b, c) (recv(a, (char*)b, c, 0))
+#define write_portable(a, b, c) (send(a, (const char*)b, c, MSG_NOSIGNAL))
+#define safe_close_portable(a) \
+	do \
+	{ \
+		if ((a) >= 0) \
+		{ \
+			close((a)); \
+			(a) = -1; \
+		} \
+	} while (0)
 #elif defined(__linux__) || defined(__FreeBSD__)
 #define read_portable(a, b, c) (read(a, b, c))
 #define write_portable(a, b, c) (send(a, b, c, MSG_NOSIGNAL))
@@ -112,6 +121,9 @@ namespace PINEServer
 	static SOCKET s_sock = INVALID_SOCKET;
 	// the message socket used in thread's accept().
 	static SOCKET s_msgsock = INVALID_SOCKET;
+#elif defined(PCSX2_PS4)
+	static int s_sock = -1;
+	static int s_msgsock = -1;
 #else
 	// absolute path of the socket. Stored in XDG_RUNTIME_DIR, if unset /tmp
 	static std::string s_socket_name;
@@ -306,6 +318,35 @@ bool PINEServer::Initialize(int slot)
 		return false;
 	}
 
+#elif defined(PCSX2_PS4)
+	sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
+	sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NETCTL);
+	sceNetInit();
+	sceNetCtlInit();
+	sceNetPoolCreate("PS4SX2-PINE", 128 * 1024, 0);
+
+	s_sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (s_sock < 0 || slot > 65536)
+	{
+		Console.WriteLn(Color_Red, "PINE: Cannot open socket! Shutting down...");
+		Deinitialize();
+		return false;
+	}
+
+	int opt = 1;
+	setsockopt(s_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+	sockaddr_in server = {};
+	server.sin_family = AF_INET;
+	server.sin_addr.s_addr = htonl(INADDR_ANY);
+	server.sin_port = htons(slot ? slot : PINE_DEFAULT_SLOT);
+
+	if (bind(s_sock, (struct sockaddr*)&server, sizeof(server)) < 0)
+	{
+		Console.WriteLn(Color_Red, "PINE: Error while binding to socket! Shutting down...");
+		Deinitialize();
+		return false;
+	}
 #else
 	char* runtime_dir = nullptr;
 #ifdef __APPLE__
@@ -396,6 +437,23 @@ std::vector<u8>& PINEServer::MakeFailIPC(std::vector<u8>& ret_buffer, uint32_t s
 
 bool PINEServer::AcceptClient()
 {
+#if defined(PCSX2_PS4)
+	sockaddr_in client_addr{};
+	socklen_t client_len = sizeof(client_addr);
+	s_msgsock = accept(s_sock, (struct sockaddr*)&client_addr, &client_len);
+	if (s_msgsock < 0)
+	{
+		if (!(errno == ECONNABORTED || errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) && s_sock >= 0)
+			Console.Error("PINE: accept() returned error %d", errno);
+		return false;
+	}
+	int nodelay = 1;
+	setsockopt(s_msgsock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+	char client_ip[INET_ADDRSTRLEN] = {0};
+	inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+	Console.WriteLn("PINE: Client connected from %s (FD %d).", client_ip, (int)s_msgsock);
+	return true;
+#else
 	s_msgsock = accept(s_sock, 0, 0);
 	if (s_msgsock < 0)
 	{
@@ -423,6 +481,7 @@ bool PINEServer::AcceptClient()
 	// Gross C-style cast, but SOCKET is a handle on Windows.
 	Console.WriteLn("PINE: New client with FD %d connected.", (int)s_msgsock);
 	return true;
+#endif
 }
 
 void PINEServer::MainLoop()
@@ -509,6 +568,9 @@ void PINEServer::Deinitialize()
 #ifdef _WIN32
 	if (s_sock != INVALID_SOCKET)
 		shutdown(s_sock, SD_BOTH);
+#elif defined(PCSX2_PS4)
+	if (s_sock >= 0)
+		shutdown(s_sock, SHUT_RDWR);
 #else
 	if (s_sock >= 0)
 		shutdown(s_sock, SHUT_RDWR);
@@ -768,4 +830,3 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 	}
 	return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
 }
-#endif

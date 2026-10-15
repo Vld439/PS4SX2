@@ -32,6 +32,7 @@
 #include "ps4/core/AudioStreamPS4.h"
 #include "ps4/core/ProbeLoggerPS4.h"
 #include "ps4/core/TelemetryPS4.h"
+#include "ps4/core/PythonRunnerPS4.h"
 #include "ps4/core/IPUProfilePS4.h"
 #include "ps4/core/EEEventProfilePS4.h"
 #include "ps4/core/EEHotspotsPS4.h"
@@ -665,7 +666,8 @@ static void* RunVM(void*)
 	bool fast_boot = access("/data/PS4SX2/vm-no-fast-boot", F_OK) != 0;
 	settings->SetBoolValue("EmuCore", "EnableFastBoot", fast_boot);
 	settings->SetBoolValue("EmuCore", "EnableFastBootFastForward", fast_boot);
-	settings->SetBoolValue("EmuCore", "EnablePINE", false);
+	settings->SetBoolValue("EmuCore", "EnablePINE", true);
+	settings->SetIntValue("EmuCore", "PINESlot", 28011);
 	settings->SetBoolValue("EmuCore", "EnableThreadPinning", false);
 	// (AI-assisted) Respect the PS4 build option; release scripts enable MTVU.
 #if defined(PCSX2_PS4_VM_BOOT_MTVU)
@@ -854,6 +856,8 @@ static void* RunVM(void*)
 			EmuConfig.Cpu.Recompiler.EnableFastmem ? "on" : "off");
 		ProbeLog("VM initialized: executing BIOS; no probe MMIO shadows\n");
 		PS4Telemetry::Stage("vm-running");
+		// Check and start embedded Tag Team trainer if BT3 is running
+		PS4Python::StartTrainerIfMatching(VMManager::GetDiscSerial().c_str());
 		// (AI-assisted) A DS4 has no dedicated analog-mode switch; start the emulated DS2 in analog mode.
 		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_ANALOG, 1.0f);
 		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_ANALOG, 0.0f);
@@ -928,6 +932,7 @@ static void* RunVM(void*)
 		PS4EEEventProfile::s_sampling.gap_pending = false;
 		ProbeLog("STAGE: VMManager::Shutdown\n");
 		PS4Telemetry::Stage("vm-shutdown");
+		PS4Python::Shutdown();
 		VMManager::Shutdown(false);
 	}
 	else
