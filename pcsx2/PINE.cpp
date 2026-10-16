@@ -556,7 +556,7 @@ void PINEServer::Deinitialize()
 {
 	s_end.store(true, std::memory_order_release);
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(PCSX2_PS4)
 	if (!s_socket_name.empty())
 	{
 		unlink(s_socket_name.c_str());
