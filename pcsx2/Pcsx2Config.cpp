@@ -621,7 +621,7 @@ Pcsx2Config::CpuOptions::CpuOptions()
 
 	VU0FPCR = DEFAULT_VU_FP_CONTROL_REGISTER;
 	VU1FPCR = DEFAULT_VU_FP_CONTROL_REGISTER;
-	ExtraMemory = false;
+	ExtraMemory = true;
 }
 
 void Pcsx2Config::CpuOptions::ApplySanityCheck()

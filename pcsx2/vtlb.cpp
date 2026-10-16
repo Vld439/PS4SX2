@@ -326,7 +326,14 @@ template void vtlb_memWrite<mem64_t>(u32 mem, mem64_t data);
 template <typename DataType>
 DataType vtlb_ramRead(u32 addr, bool* result)
 {
-	const auto vmv = vtlbdata.vmap[addr >> VTLB_PAGE_BITS];
+	const u32 page = addr >> VTLB_PAGE_BITS;
+	if (page >= VTLB_VMAP_ITEMS) [[unlikely]]
+	{
+		if (result)
+			*result = false;
+		return {};
+	}
+	const auto vmv = vtlbdata.vmap[page];
 	if (vmv.isHandler(addr)) [[unlikely]]
 	{
 		if (result)
@@ -334,8 +341,16 @@ DataType vtlb_ramRead(u32 addr, bool* result)
 		return {};
 	}
 
+	const uptr ptr = vmv.assumePtr(addr);
+	if (!ptr) [[unlikely]]
+	{
+		if (result)
+			*result = false;
+		return {};
+	}
+
 	DataType value = {};
-	std::memcpy(&value, reinterpret_cast<DataType*>(vmv.assumePtr(addr)), sizeof(DataType));
+	std::memcpy(&value, reinterpret_cast<const DataType*>(ptr), sizeof(DataType));
 
 	if (result)
 		*result = true;
@@ -345,11 +360,18 @@ DataType vtlb_ramRead(u32 addr, bool* result)
 template <typename DataType>
 bool vtlb_ramWrite(u32 addr, const DataType& data)
 {
-	const auto vmv = vtlbdata.vmap[addr >> VTLB_PAGE_BITS];
+	const u32 page = addr >> VTLB_PAGE_BITS;
+	if (page >= VTLB_VMAP_ITEMS) [[unlikely]]
+		return false;
+	const auto vmv = vtlbdata.vmap[page];
 	if (vmv.isHandler(addr)) [[unlikely]]
 		return false;
 
-	std::memcpy(reinterpret_cast<DataType*>(vmv.assumePtr(addr)), &data, sizeof(DataType));
+	const uptr ptr = vmv.assumePtr(addr);
+	if (!ptr) [[unlikely]]
+		return false;
+
+	std::memcpy(reinterpret_cast<DataType*>(ptr), &data, sizeof(DataType));
 	return true;
 }
 

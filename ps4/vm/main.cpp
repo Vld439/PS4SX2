@@ -132,6 +132,10 @@ extern void VMHostSetCPUThread();
 extern void VMHostDrainCPUQueue();
 extern u64 VMHostGetCPUQueueLockCount();
 static int s_pad = -1;
+static int s_pad2 = -1;
+static OrbisUserServiceUserId s_user = 0;
+static u32 s_previous_pad2_buttons = 0;
+static double s_last_pad2_check = -5.0;
 static std::string s_selected_game;
 static bool s_use_vulkan_selector = false;
 static u32 s_previous_pad_buttons = 0;
@@ -173,7 +177,7 @@ static u8 MapStickAxis(u8 value)
 }
 
 // (AI-assisted) Forward the PS4 controller to the first emulated DualShock 2.
-static void VMHostUpdateController(const OrbisPadData& data)
+static void VMHostUpdateController(u32 pad_index, const OrbisPadData& data, u32& prev_buttons)
 {
 	struct ButtonMapping
 	{
@@ -198,20 +202,20 @@ static void VMHostUpdateController(const OrbisPadData& data)
 	};
 	for (const ButtonMapping& mapping : mappings)
 	{
-		const bool was_pressed = (s_previous_pad_buttons & mapping.host_mask) != 0;
+		const bool was_pressed = (prev_buttons & mapping.host_mask) != 0;
 		const bool is_pressed = (data.buttons & mapping.host_mask) != 0;
 		if (was_pressed != is_pressed)
-			Pad::SetControllerState(0, mapping.ps2_button, is_pressed ? 1.0f : 0.0f);
+			Pad::SetControllerState(pad_index, mapping.ps2_button, is_pressed ? 1.0f : 0.0f);
 	}
-	s_previous_pad_buttons = data.buttons;
+	prev_buttons = data.buttons;
 
-	if (PadBase* pad = Pad::GetPad(0))
+	if (PadBase* pad = Pad::GetPad(pad_index))
 	{
 		pad->SetRawAnalogs(
 			{MapStickAxis(data.leftStick.x), MapStickAxis(data.leftStick.y)},
 			{MapStickAxis(data.rightStick.x), MapStickAxis(data.rightStick.y)});
-		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_L2, data.analogButtons.l2 / 255.0f);
-		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_R2, data.analogButtons.r2 / 255.0f);
+		Pad::SetControllerState(pad_index, PadDualshock2::Inputs::PAD_L2, data.analogButtons.l2 / 255.0f);
+		Pad::SetControllerState(pad_index, PadDualshock2::Inputs::PAD_R2, data.analogButtons.r2 / 255.0f);
 	}
 }
 
@@ -422,7 +426,47 @@ void VMHostPoll()
 	}
 	else
 		buttons.buttons &= ~s_blocked_pad_buttons;
-	VMHostUpdateController(buttons);
+	VMHostUpdateController(0, buttons, s_previous_pad_buttons);
+	if (s_pad2 >= 0)
+	{
+		OrbisPadData buttons2{};
+		if (scePadReadState(s_pad2, &buttons2) == 0 && buttons2.connected)
+		{
+			if (s_game_menu_open || vm_state == VMState::Paused)
+			{
+				buttons2 = {};
+				buttons2.leftStick.x = buttons2.leftStick.y = 128;
+				buttons2.rightStick.x = buttons2.rightStick.y = 128;
+			}
+			VMHostUpdateController(1, buttons2, s_previous_pad2_buttons);
+		}
+	}
+	else if (elapsed - s_last_pad2_check >= 2.0)
+	{
+		s_last_pad2_check = elapsed;
+		OrbisUserServiceLoginUserIdList user_list{};
+		if (sceUserServiceGetLoginUserIdList(&user_list) == 0)
+		{
+			for (int i = 0; i < 4; i++)
+			{
+				if (user_list.userId[i] > 0 && user_list.userId[i] != s_user)
+				{
+					s_pad2 = scePadOpen(user_list.userId[i], 0, 0, nullptr);
+					if (s_pad2 >= 0)
+					{
+						ProbeLog("Vulkan input: pad 2 opened for user %#x: handle=%d\n", user_list.userId[i], s_pad2);
+						break;
+					}
+				}
+			}
+		}
+		if (s_pad2 < 0 && s_user > 0)
+		{
+			s_pad2 = scePadOpen(s_user, 0, 1, nullptr);
+			if (s_pad2 >= 0)
+				ProbeLog("Vulkan input: pad 2 opened for slot 1: handle=%d\n", s_pad2);
+		}
+	}
 	if (!menu_was_open && s_game_menu_open)
 	{
 		// (AI-assisted) Verbose bracket to isolate which pause step hangs. Needs proper testing.
@@ -666,6 +710,7 @@ static void* RunVM(void*)
 	bool fast_boot = access("/data/PS4SX2/vm-no-fast-boot", F_OK) != 0;
 	settings->SetBoolValue("EmuCore", "EnableFastBoot", fast_boot);
 	settings->SetBoolValue("EmuCore", "EnableFastBootFastForward", fast_boot);
+	settings->SetBoolValue("EmuCore/CPU", "ExtraMemory", true);
 	settings->SetBoolValue("EmuCore", "EnablePINE", true);
 	settings->SetIntValue("EmuCore", "PINESlot", 28011);
 	settings->SetBoolValue("EmuCore", "EnableThreadPinning", false);
@@ -1052,6 +1097,7 @@ int main()
 			ProbeLog("Vulkan input: UserService init=%#x\n", init_result);
 			user_result = sceUserServiceGetInitialUser(&user);
 		}
+		s_user = user;
 		if (s_pad < 0)
 		{
 			const int pad_result = scePadInit();
@@ -1059,7 +1105,24 @@ int main()
 				s_pad = scePadOpen(user, 0, 0, nullptr);
 			ProbeLog("Vulkan input: pad init=%#x user=%#x handle=%d\n", pad_result, user_result, s_pad);
 		}
-	}
+		if (s_pad2 < 0)
+		{
+			OrbisUserServiceLoginUserIdList user_list{};
+			if (sceUserServiceGetLoginUserIdList(&user_list) == 0)
+			{
+				for (int i = 0; i < 4; i++)
+				{
+					if (user_list.userId[i] > 0 && user_list.userId[i] != s_user)
+					{
+						s_pad2 = scePadOpen(user_list.userId[i], 0, 0, nullptr);
+						if (s_pad2 >= 0) break;
+					}
+				}
+			}
+			if (s_pad2 < 0 && s_user > 0)
+				s_pad2 = scePadOpen(s_user, 0, 1, nullptr);
+			ProbeLog("Vulkan input: pad 2 handle=%d\n", s_pad2);
+		}	}
 	int rc = 0;
 	s_return_to_main_menu.store(false, std::memory_order_release);
 	pthread_attr_t attr;
@@ -1078,6 +1141,8 @@ int main()
 		ProbeLog("CPU thread failed: %d\n", rc);
 	if (s_pad >= 0)
 		scePadClose(s_pad);
+	if (s_pad2 >= 0)
+		scePadClose(s_pad2);
 	const bool relaunch_main_menu = rc == 0 && s_return_to_main_menu.load(std::memory_order_acquire);
 	Log::SetHostOutputLevel(LOGLEVEL_NONE, nullptr);
 	PS4Telemetry::Stage(relaunch_main_menu ? "exit-relaunch" : "exit");
